@@ -1,0 +1,24 @@
+# Secrets and Environment Variables
+.env
+.env.*
+!.env.example
+
+# Maven build output
+target/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# Local storage files
+storage/
+storage/uploads/
+
+# Scratch & temporary verification scripts
+scratch/
+*.log
+
+# OS artifacts
+.DS_Store
+Thumbs.db
