@@ -13,6 +13,7 @@ public record HandoverTransactionDto(
         BigDecimal agreedPricePerKg,
         BigDecimal totalAmount,
         HandoverStatus status,
+        String paymentMethod,
         String handoverNotes,
         Instant createdAt,
         Instant completedAt
@@ -28,6 +29,7 @@ public record HandoverTransactionDto(
                 entity.getAgreedPricePerKg(),
                 entity.getTotalAmount(),
                 entity.getStatus(),
+                entity.getPaymentMethod(),
                 entity.getHandoverNotes(),
                 entity.getCreatedAt(),
                 entity.getCompletedAt()

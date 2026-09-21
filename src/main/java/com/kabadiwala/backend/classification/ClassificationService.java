@@ -90,47 +90,83 @@ public class ClassificationService {
 
     @Transactional
     public MaterialLot confirmClassification(UUID lotId, String confirmedCategoryCode, String notes) {
+        return confirmClassification(lotId, new ConfirmClassificationRequest(confirmedCategoryCode, notes));
+    }
+
+    @Transactional
+    public MaterialLot confirmClassification(UUID lotId, ConfirmClassificationRequest request) {
         MaterialLot lot = materialLotRepository.findById(lotId)
                 .orElseThrow(() -> new ResourceNotFoundException("MaterialLot", lotId));
 
-        WasteCategory category = wasteCategoryRepository.findById(confirmedCategoryCode)
-                .orElseThrow(() -> new ResourceNotFoundException("WasteCategory", confirmedCategoryCode));
-
-        Optional<ClassificationRecord> latestRecordOpt = classificationRecordRepository.findTopByLotIdOrderByCreatedAtDesc(lotId);
+        WasteCategory category = wasteCategoryRepository.findById(request.confirmedCategoryCode())
+                .orElseThrow(() -> new ResourceNotFoundException("WasteCategory", request.confirmedCategoryCode()));
 
         ClassificationMethod method;
-        if (latestRecordOpt.isPresent()) {
-            ClassificationRecord record = latestRecordOpt.get();
-            String suggested = taxonomyMappingService.suggestWorkerCategory(record.getPredictedClass());
-            if (confirmedCategoryCode.equalsIgnoreCase(suggested) || confirmedCategoryCode.equalsIgnoreCase(record.getPredictedClass())) {
+
+        if (request.hasAiPrediction()) {
+            // Frontend executed local on-device ONNX inference
+            String predictedClass = request.predictedClass() != null ? request.predictedClass().trim() : null;
+            String suggested = taxonomyMappingService.suggestWorkerCategory(predictedClass);
+
+            if (request.confirmedCategoryCode().equalsIgnoreCase(suggested)
+                    || (predictedClass != null && request.confirmedCategoryCode().equalsIgnoreCase(predictedClass))) {
                 method = ClassificationMethod.AI_CONFIRMED;
             } else {
                 method = ClassificationMethod.AI_CORRECTED;
             }
-            record.setClassificationMethod(method);
-            record.setWorkerConfirmedCategoryCode(category.getCode());
-            classificationRecordRepository.save(record);
-        } else {
-            // Manual selection without AI prediction
-            method = ClassificationMethod.MANUAL;
+
             ClassificationRecord record = new ClassificationRecord(
                     lotId,
-                    null,
-                    null,
-                    "manual",
-                    "none",
-                    0L,
-                    ClassificationMethod.MANUAL,
+                    predictedClass,
+                    request.confidence(),
+                    request.modelName() != null ? request.modelName() : "local-onnx",
+                    request.modelVersion() != null ? request.modelVersion() : "v1.0",
+                    request.inferenceLatencyMs() != null ? request.inferenceLatencyMs() : 0L,
+                    method,
                     category.getCode()
             );
             classificationRecordRepository.save(record);
+            logger.info("Saved local ONNX prediction record for lot {}: predicted={}, confidence={}, model={}, method={}",
+                    lotId, predictedClass, request.confidence(), record.getModelName(), method);
+        } else {
+            // Check if server-side AI inference was previously recorded for this lot
+            Optional<ClassificationRecord> latestRecordOpt = classificationRecordRepository.findTopByLotIdOrderByCreatedAtDesc(lotId);
+            if (latestRecordOpt.isPresent() && !"manual-fallback".equalsIgnoreCase(latestRecordOpt.get().getModelName())
+                    && latestRecordOpt.get().getPredictedClass() != null) {
+                ClassificationRecord record = latestRecordOpt.get();
+                String suggested = taxonomyMappingService.suggestWorkerCategory(record.getPredictedClass());
+                if (request.confirmedCategoryCode().equalsIgnoreCase(suggested)
+                        || request.confirmedCategoryCode().equalsIgnoreCase(record.getPredictedClass())) {
+                    method = ClassificationMethod.AI_CONFIRMED;
+                } else {
+                    method = ClassificationMethod.AI_CORRECTED;
+                }
+                record.setClassificationMethod(method);
+                record.setWorkerConfirmedCategoryCode(category.getCode());
+                classificationRecordRepository.save(record);
+            } else {
+                // Pure manual selection without AI prediction
+                method = ClassificationMethod.MANUAL;
+                ClassificationRecord record = new ClassificationRecord(
+                        lotId,
+                        null,
+                        null,
+                        "manual",
+                        "none",
+                        0L,
+                        ClassificationMethod.MANUAL,
+                        category.getCode()
+                );
+                classificationRecordRepository.save(record);
+                logger.info("Saved manual classification record for lot {}", lotId);
+            }
         }
 
         lot.setConfirmedCategoryCode(category.getCode());
         lot.setClassificationMethod(method);
         lot.setStatus(LotStatus.CLASSIFIED);
-        if (notes != null && !notes.isBlank()) {
-            lot.setNotes(notes);
+        if (request.notes() != null && !request.notes().isBlank()) {
+            lot.setNotes(request.notes());
         }
 
         // If weight was already provided, calculate price immediately

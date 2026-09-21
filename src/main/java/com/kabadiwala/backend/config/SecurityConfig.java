@@ -36,6 +36,8 @@ public class SecurityConfig {
                         ).permitAll()
                         // Public taxonomy inspection
                         .requestMatchers(HttpMethod.GET, "/api/v1/categories/**").permitAll()
+                        // Public static image uploads (for browser <img> rendering)
+                        .requestMatchers(HttpMethod.GET, "/api/v1/storage/files/**").permitAll()
                         // Collector workflows
                         .requestMatchers("/api/v1/material-lots/**", "/api/v1/lots/**").hasAnyRole("COLLECTOR", "ADMIN")
                         // Recycler / Collector shared transaction endpoints

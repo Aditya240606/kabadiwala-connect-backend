@@ -52,7 +52,7 @@ The test suite executes against an in-memory test database with 100% isolation:
 ```bash
 mvn test
 ```
-*Status: 31/31 tests passing (security, domain lifecycle, pricing, ML client fallback, and end-to-end flows).*
+*Status: 58/58 tests passing (security, domain lifecycle, pricing, ML client fallback, local ONNX metadata ingestion, negative/security invariants, and end-to-end flows).*
 
 ### Step 3: Start Spring Boot
 ```bash
@@ -95,12 +95,18 @@ The 14 canonical worker-facing categories are seeded in Flyway migration `V2__se
 - `POST /api/v1/lots` or `/api/v1/material-lots` — Create material lot (`COLLECTOR`)
 - `GET /api/v1/lots/{id}` — Retrieve lot details (Owner/`ADMIN`)
 - `POST /api/v1/lots/{id}/classify` — Trigger AI inference (`COLLECTOR`)
-- `POST /api/v1/lots/{id}/confirm-classification` — Confirm/correct category (`COLLECTOR`)
+- `POST /api/v1/lots/{id}/confirm-classification` — Confirm/correct category with local ONNX metadata (`COLLECTOR`)
 - `POST /api/v1/lots/{id}/weight` — Record weight & auto-price (`COLLECTOR`)
 - `POST /api/v1/lots/{id}/ready` — Stage for handover (`COLLECTOR`)
 - `GET /api/v1/pricing/effective` — Active rate card
 - `GET /api/v1/recyclers/match` — Match verified recyclers
 - `POST /api/v1/transactions/initiate` — Initiate handover (`COLLECTOR`)
-- `POST /api/v1/transactions/{id}/accept` — Accept & settle transaction (`RECYCLER`)
+- `GET /api/v1/transactions` — List user's transactions (Collector or Recycler)
+- `GET /api/v1/transactions/{id}` — Retrieve transaction details (Collector/Recycler/`ADMIN`)
+- `GET /api/v1/transactions/recycler/pending` — List pending requests for recycler (`RECYCLER`)
+- `GET /api/v1/transactions/recycler/history` — List completed recycler transactions (`RECYCLER`)
+- `POST /api/v1/transactions/{id}/accept` — Accept handover request (`RECYCLER`)
+- `POST /api/v1/transactions/{id}/collect` — Record collection & verified weight (`RECYCLER`)
+- `POST /api/v1/transactions/{id}/complete` — Record payment & complete transaction (`RECYCLER`)
 - `POST /api/v1/transactions/{id}/reject` — Reject handover (`RECYCLER`)
 - `POST /api/v1/storage/upload` — Upload lot image

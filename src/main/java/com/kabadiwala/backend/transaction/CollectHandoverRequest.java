@@ -6,21 +6,16 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 
-public record AcceptHandoverRequest(
+public record CollectHandoverRequest(
+        @NotNull(message = "Confirmed weight is required")
         @DecimalMin(value = "0.001", message = "Weight must be at least 0.001 kg")
         @DecimalMax(value = "50000.0", message = "Weight exceeds maximum limit")
         BigDecimal confirmedWeightKg,
 
+        @NotNull(message = "Confirmed rate per kg is required")
         @DecimalMin(value = "0.0", message = "Rate per kg cannot be negative")
         BigDecimal confirmedPricePerKg,
 
-        @Size(max = 30, message = "Payment method must not exceed 30 characters")
-        String paymentMethod,
-
-        @Size(max = 500, message = "Receipt notes must not exceed 500 characters")
+        @Size(max = 500, message = "Collection notes must not exceed 500 characters")
         String notes
-) {
-    public AcceptHandoverRequest(BigDecimal confirmedWeightKg, BigDecimal confirmedPricePerKg, String notes) {
-        this(confirmedWeightKg, confirmedPricePerKg, null, notes);
-    }
-}
+) {}

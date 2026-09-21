@@ -12,5 +12,6 @@ import java.util.UUID;
 public interface HandoverTransactionRepository extends JpaRepository<HandoverTransaction, UUID> {
     Page<HandoverTransaction> findByCollectorIdOrderByCreatedAtDesc(UUID collectorId, Pageable pageable);
     Page<HandoverTransaction> findByRecyclerIdOrderByCreatedAtDesc(UUID recyclerId, Pageable pageable);
+    Page<HandoverTransaction> findByRecyclerIdAndStatusOrderByCreatedAtDesc(UUID recyclerId, HandoverStatus status, Pageable pageable);
     Optional<HandoverTransaction> findByLotId(UUID lotId);
 }

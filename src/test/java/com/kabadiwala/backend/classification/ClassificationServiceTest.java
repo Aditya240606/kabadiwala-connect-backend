@@ -166,5 +166,83 @@ class ClassificationServiceTest {
         ArgumentCaptor<ClassificationRecord> captor = ArgumentCaptor.forClass(ClassificationRecord.class);
         verify(classificationRecordRepository).save(captor.capture());
         assertEquals(ClassificationMethod.MANUAL, captor.getValue().getClassificationMethod());
+        assertNull(captor.getValue().getConfidence(), "Manual classification must not force fake confidence");
+    }
+
+    @Test
+    @DisplayName("Local ONNX inference: Frontend submits prediction and worker confirms -> AI_CONFIRMED with ONNX metadata")
+    void testConfirmClassification_LocalOnnxAiConfirmed() {
+        UUID lotId = UUID.randomUUID();
+        MaterialLot lot = new MaterialLot(UUID.randomUUID());
+        lot.setId(lotId);
+
+        when(materialLotRepository.findById(lotId)).thenReturn(Optional.of(lot));
+        when(materialLotRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+
+        WasteCategory category = new WasteCategory("PCB", "PCB / Circuit Board", "", true);
+        when(wasteCategoryRepository.findById("PCB")).thenReturn(Optional.of(category));
+
+        ConfirmClassificationRequest request = new ConfirmClassificationRequest(
+                "PCB",
+                "PCB",
+                new BigDecimal("0.9250"),
+                "ShuffleNetV2-x1.0-onnx",
+                "v1.0",
+                25L,
+                "Verified by worker"
+        );
+
+        MaterialLot updated = classificationService.confirmClassification(lotId, request);
+
+        assertEquals("PCB", updated.getConfirmedCategoryCode());
+        assertEquals(ClassificationMethod.AI_CONFIRMED, updated.getClassificationMethod());
+        assertEquals(LotStatus.CLASSIFIED, updated.getStatus());
+
+        ArgumentCaptor<ClassificationRecord> captor = ArgumentCaptor.forClass(ClassificationRecord.class);
+        verify(classificationRecordRepository).save(captor.capture());
+        ClassificationRecord saved = captor.getValue();
+        assertEquals("PCB", saved.getPredictedClass());
+        assertEquals(new BigDecimal("0.9250"), saved.getConfidence());
+        assertEquals("ShuffleNetV2-x1.0-onnx", saved.getModelName());
+        assertEquals("v1.0", saved.getModelVersion());
+        assertEquals(25L, saved.getInferenceLatencyMs());
+        assertEquals(ClassificationMethod.AI_CONFIRMED, saved.getClassificationMethod());
+    }
+
+    @Test
+    @DisplayName("Local ONNX inference: Frontend submits prediction and worker corrects category -> AI_CORRECTED")
+    void testConfirmClassification_LocalOnnxAiCorrected() {
+        UUID lotId = UUID.randomUUID();
+        MaterialLot lot = new MaterialLot(UUID.randomUUID());
+        lot.setId(lotId);
+
+        when(materialLotRepository.findById(lotId)).thenReturn(Optional.of(lot));
+        when(materialLotRepository.save(any())).thenAnswer(i -> i.getArgument(0));
+
+        WasteCategory category = new WasteCategory("STORAGE_DEVICE", "Storage Device", "", true);
+        when(wasteCategoryRepository.findById("STORAGE_DEVICE")).thenReturn(Optional.of(category));
+
+        // Model predicted Flat-Panel-Monitor (which maps to DISPLAY_SCREEN), but worker corrects to STORAGE_DEVICE
+        ConfirmClassificationRequest request = new ConfirmClassificationRequest(
+                "STORAGE_DEVICE",
+                "Flat-Panel-Monitor",
+                new BigDecimal("0.7800"),
+                "ShuffleNetV2-x1.0-onnx",
+                "v1.0",
+                20L,
+                "Worker corrected: it is an HDD enclosure"
+        );
+
+        MaterialLot updated = classificationService.confirmClassification(lotId, request);
+
+        assertEquals("STORAGE_DEVICE", updated.getConfirmedCategoryCode());
+        assertEquals(ClassificationMethod.AI_CORRECTED, updated.getClassificationMethod());
+
+        ArgumentCaptor<ClassificationRecord> captor = ArgumentCaptor.forClass(ClassificationRecord.class);
+        verify(classificationRecordRepository).save(captor.capture());
+        ClassificationRecord saved = captor.getValue();
+        assertEquals("Flat-Panel-Monitor", saved.getPredictedClass());
+        assertEquals(new BigDecimal("0.7800"), saved.getConfidence());
+        assertEquals(ClassificationMethod.AI_CORRECTED, saved.getClassificationMethod());
     }
 }

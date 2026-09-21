@@ -80,26 +80,87 @@ public class HandoverService {
         return HandoverTransactionDto.fromEntity(saved);
     }
 
+    @Transactional(readOnly = true)
+    public Recycler getRecyclerForUser(UUID userId) {
+        return recyclerRepository.findByUserId(userId)
+                .or(() -> recyclerRepository.findById(userId))
+                .orElseThrow(() -> new ResourceNotFoundException("Recycler facility not found for user: " + userId));
+    }
+
+    public void verifyTransactionAccess(HandoverTransaction tx) {
+        com.kabadiwala.backend.auth.UserPrincipal current = SecurityUtils.getRequiredCurrentUser();
+        if (current.getRole() == com.kabadiwala.backend.auth.UserRole.ADMIN) {
+            return;
+        }
+        boolean isCollector = tx.getCollectorId().equals(current.getId());
+        boolean isRecycler = recyclerRepository.findByUserId(current.getId())
+                .map(r -> r.getId().equals(tx.getRecyclerId()))
+                .orElse(current.getId().equals(tx.getRecyclerId()));
+
+        if (!isCollector && !isRecycler) {
+            throw new com.kabadiwala.backend.common.UnauthorizedResourceAccessException("You are not authorized to access this transaction");
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public HandoverTransactionDto getTransactionById(UUID transactionId) {
+        HandoverTransaction tx = transactionRepository.findById(transactionId)
+                .orElseThrow(() -> new ResourceNotFoundException("HandoverTransaction", transactionId));
+        verifyTransactionAccess(tx);
+        return HandoverTransactionDto.fromEntity(tx);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<HandoverTransactionDto> getRecyclerPendingTransactions(UUID recyclerId, Pageable pageable) {
+        return transactionRepository.findByRecyclerIdAndStatusOrderByCreatedAtDesc(recyclerId, HandoverStatus.INITIATED, pageable)
+                .map(HandoverTransactionDto::fromEntity);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<HandoverTransactionDto> getRecyclerTransactions(UUID recyclerId, Pageable pageable) {
+        return transactionRepository.findByRecyclerIdOrderByCreatedAtDesc(recyclerId, pageable)
+                .map(HandoverTransactionDto::fromEntity);
+    }
+
     @Transactional
     public HandoverTransactionDto acceptHandover(UUID transactionId, AcceptHandoverRequest request) {
         HandoverTransaction tx = transactionRepository.findById(transactionId)
                 .orElseThrow(() -> new ResourceNotFoundException("HandoverTransaction", transactionId));
 
+        verifyTransactionAccess(tx);
+
         if (tx.getStatus() != HandoverStatus.INITIATED) {
-            throw new InvalidStateTransitionException("Transaction must be INITIATED to be accepted. Current: " + tx.getStatus());
+            throw new InvalidStateTransitionException("Transaction must be INITIATED to be accepted. Current status: " + tx.getStatus());
         }
 
+        // If weight is not provided, transition to ACCEPTED
+        if (request == null || request.confirmedWeightKg() == null) {
+            tx.setStatus(HandoverStatus.ACCEPTED);
+            if (request != null && request.notes() != null && !request.notes().isBlank()) {
+                tx.setHandoverNotes(appendNotes(tx.getHandoverNotes(), request.notes()));
+            }
+            HandoverTransaction saved = transactionRepository.save(tx);
+            logger.info("Handover transaction {} status updated to ACCEPTED", transactionId);
+            return HandoverTransactionDto.fromEntity(saved);
+        }
+
+        // Otherwise: one-step acceptance and completion (backward compatible)
         BigDecimal finalWeight = request.confirmedWeightKg();
-        BigDecimal finalRate = request.confirmedPricePerKg();
+        BigDecimal finalRate = request.confirmedPricePerKg() != null ? request.confirmedPricePerKg() : tx.getAgreedPricePerKg();
         BigDecimal finalAmount = finalWeight.multiply(finalRate).setScale(2, RoundingMode.HALF_UP);
 
         tx.setAgreedWeightKg(finalWeight);
         tx.setAgreedPricePerKg(finalRate);
         tx.setTotalAmount(finalAmount);
+        if (request.paymentMethod() != null && !request.paymentMethod().isBlank()) {
+            tx.setPaymentMethod(request.paymentMethod().toUpperCase());
+        } else if (tx.getPaymentMethod() == null) {
+            tx.setPaymentMethod("CASH");
+        }
         tx.setStatus(HandoverStatus.COMPLETED);
         tx.setCompletedAt(Instant.now());
         if (request.notes() != null && !request.notes().isBlank()) {
-            tx.setHandoverNotes(tx.getHandoverNotes() != null ? tx.getHandoverNotes() + " | " + request.notes() : request.notes());
+            tx.setHandoverNotes(appendNotes(tx.getHandoverNotes(), request.notes()));
         }
 
         MaterialLot lot = materialLotRepository.findById(tx.getLotId())
@@ -114,18 +175,81 @@ public class HandoverService {
     }
 
     @Transactional
+    public HandoverTransactionDto collectHandover(UUID transactionId, CollectHandoverRequest request) {
+        HandoverTransaction tx = transactionRepository.findById(transactionId)
+                .orElseThrow(() -> new ResourceNotFoundException("HandoverTransaction", transactionId));
+
+        verifyTransactionAccess(tx);
+
+        if (tx.getStatus() != HandoverStatus.ACCEPTED) {
+            throw new InvalidStateTransitionException("Transaction must be in ACCEPTED state before recording collection. Current status: " + tx.getStatus());
+        }
+
+        BigDecimal finalWeight = request.confirmedWeightKg();
+        BigDecimal finalRate = request.confirmedPricePerKg();
+        BigDecimal finalAmount = finalWeight.multiply(finalRate).setScale(2, RoundingMode.HALF_UP);
+
+        tx.setAgreedWeightKg(finalWeight);
+        tx.setAgreedPricePerKg(finalRate);
+        tx.setTotalAmount(finalAmount);
+        tx.setStatus(HandoverStatus.COLLECTED);
+        if (request.notes() != null && !request.notes().isBlank()) {
+            tx.setHandoverNotes(appendNotes(tx.getHandoverNotes(), "Collection: " + request.notes()));
+        }
+
+        HandoverTransaction updated = transactionRepository.save(tx);
+        logger.info("Handover transaction {} recorded as COLLECTED, agreed amount: INR {}", transactionId, finalAmount);
+        return HandoverTransactionDto.fromEntity(updated);
+    }
+
+    @Transactional
+    public HandoverTransactionDto completeTransaction(UUID transactionId, CompleteTransactionRequest request) {
+        HandoverTransaction tx = transactionRepository.findById(transactionId)
+                .orElseThrow(() -> new ResourceNotFoundException("HandoverTransaction", transactionId));
+
+        verifyTransactionAccess(tx);
+
+        if (tx.getStatus() != HandoverStatus.COLLECTED) {
+            throw new InvalidStateTransitionException("Transaction must be in COLLECTED status before completing payment. Current status: " + tx.getStatus());
+        }
+
+        String paymentMethod = (request != null && request.paymentMethod() != null && !request.paymentMethod().isBlank())
+                ? request.paymentMethod().toUpperCase()
+                : "CASH";
+
+        tx.setPaymentMethod(paymentMethod);
+        tx.setStatus(HandoverStatus.COMPLETED);
+        tx.setCompletedAt(Instant.now());
+        if (request != null && request.notes() != null && !request.notes().isBlank()) {
+            tx.setHandoverNotes(appendNotes(tx.getHandoverNotes(), "Payment [" + paymentMethod + "]: " + request.notes()));
+        }
+
+        MaterialLot lot = materialLotRepository.findById(tx.getLotId())
+                .orElseThrow(() -> new ResourceNotFoundException("MaterialLot", tx.getLotId()));
+        lot.setFinalPrice(tx.getTotalAmount());
+        lot.setStatus(LotStatus.COMPLETED);
+        materialLotRepository.save(lot);
+
+        HandoverTransaction updated = transactionRepository.save(tx);
+        logger.info("Handover transaction {} successfully COMPLETED with paymentMethod={}", transactionId, paymentMethod);
+        return HandoverTransactionDto.fromEntity(updated);
+    }
+
+    @Transactional
     public HandoverTransactionDto rejectHandover(UUID transactionId, String reason) {
         HandoverTransaction tx = transactionRepository.findById(transactionId)
                 .orElseThrow(() -> new ResourceNotFoundException("HandoverTransaction", transactionId));
 
-        if (tx.getStatus() != HandoverStatus.INITIATED) {
-            throw new InvalidStateTransitionException("Transaction must be INITIATED to be rejected. Current: " + tx.getStatus());
+        verifyTransactionAccess(tx);
+
+        if (tx.getStatus() != HandoverStatus.INITIATED && tx.getStatus() != HandoverStatus.ACCEPTED) {
+            throw new InvalidStateTransitionException("Transaction must be INITIATED or ACCEPTED to be rejected. Current: " + tx.getStatus());
         }
 
         tx.setStatus(HandoverStatus.REJECTED);
         tx.setCompletedAt(Instant.now());
         if (reason != null && !reason.isBlank()) {
-            tx.setHandoverNotes(tx.getHandoverNotes() != null ? tx.getHandoverNotes() + " | Rejection: " + reason : "Rejection: " + reason);
+            tx.setHandoverNotes(appendNotes(tx.getHandoverNotes(), "Rejection: " + reason));
         }
 
         // Return lot back to READY_FOR_HANDOVER so collector can re-route
@@ -143,5 +267,12 @@ public class HandoverService {
     public Page<HandoverTransactionDto> getCollectorTransactions(UUID collectorId, Pageable pageable) {
         return transactionRepository.findByCollectorIdOrderByCreatedAtDesc(collectorId, pageable)
                 .map(HandoverTransactionDto::fromEntity);
+    }
+
+    private String appendNotes(String existing, String addition) {
+        if (existing == null || existing.isBlank()) {
+            return addition;
+        }
+        return existing + " | " + addition;
     }
 }

@@ -101,8 +101,7 @@ public class MaterialLotController {
 
         MaterialLot updated = classificationService.confirmClassification(
                 id,
-                request.confirmedCategoryCode(),
-                request.notes()
+                request
         );
         return ResponseEntity.ok(ApiResponse.ok("Classification confirmed", materialLotService.toDto(updated)));
     }

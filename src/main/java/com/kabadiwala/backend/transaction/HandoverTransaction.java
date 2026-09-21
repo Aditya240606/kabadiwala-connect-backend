@@ -39,6 +39,9 @@ public class HandoverTransaction {
     @Column(nullable = false, length = 30)
     private HandoverStatus status = HandoverStatus.INITIATED;
 
+    @Column(name = "payment_method", length = 30)
+    private String paymentMethod;
+
     @Column(name = "handover_notes", columnDefinition = "TEXT")
     private String handoverNotes;
 
@@ -141,6 +144,14 @@ public class HandoverTransaction {
 
     public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getPaymentMethod() {
+        return paymentMethod;
+    }
+
+    public void setPaymentMethod(String paymentMethod) {
+        this.paymentMethod = paymentMethod;
     }
 
     public Instant getCompletedAt() {
